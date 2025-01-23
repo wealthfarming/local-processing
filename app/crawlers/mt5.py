@@ -173,8 +173,8 @@ class MT5DataSource(DataSource):
             if key not in fields_to_exclude and value is not None
         }
 
-        with open("output.json", "w", encoding="utf-8") as json_file:
-            json.dump(cleaned_data, json_file, indent=4, ensure_ascii=False)
+        # with open("output.json", "w", encoding="utf-8") as json_file:
+        #     json.dump(cleaned_data, json_file, indent=4, ensure_ascii=False)
 
         print(cleaned_data)
 
