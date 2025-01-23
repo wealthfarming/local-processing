@@ -183,3 +183,9 @@ class MT5DataSource(DataSource):
     def close_connection(self):
         mt5.shutdown()
         print("Closing connection to MT5 server.")
+
+    def get_data(self):
+        self.connect()
+        raw_data = self.pull_data()
+        cleaned_data = self.clean_data(raw_data)
+        return cleaned_data
