@@ -177,6 +177,7 @@ class MT5DataSource(DataSource):
         raw_data = self.pull_data()
         cleaned_data = self.clean_data(raw_data)
         return cleaned_data
+
     
     def sync_raw_data_platform(self):
 
@@ -242,7 +243,5 @@ class MT5DataSource(DataSource):
 
         return balance
         
-
-
 
 

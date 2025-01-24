@@ -21,3 +21,4 @@ try:
 finally:
     # Step 4: Close the connection
     mt5_source.close_connection()
+# pip freeze > requirements.txt
