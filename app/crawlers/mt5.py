@@ -1,38 +1,31 @@
 from .base import DataSource
 import MetaTrader5 as mt5
+from MetaTrader5 import DEAL_TYPE_BUY, DEAL_TYPE_SELL, DEAL_TYPE_BALANCE
 import pandas as pd
 from datetime import datetime, timedelta
-import requests
 import subprocess
 import os
 import json
 import pytz
-
-account = 5033013189  # Replace with your demo account number
-password = "8-WwAaIk"  # Replace with your demo account password
-server = "MetaQuotes-Demo"  # Replace with your broker's server name
-
-
-# # Get account info
-# account = os.getenv("MT5_ID")
-# password = os.getenv("MT5_PASSWORD")
-# server = os.getenv("MT5_SERVER")
-
-
-def format_time(timestamp):
-    if timestamp and isinstance(timestamp, (int, float)):
-        if timestamp > 10000000000:
-            timestamp /= 1000
-        utc_time = datetime.utcfromtimestamp(timestamp)
-        utc_time = pytz.utc.localize(utc_time)
-        return utc_time.strftime("%Y-%m-%d %H:%M:%S")
-    else:
-        return None
-
+from database import TrackingDaily, engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy import and_
+from dotenv import load_dotenv
+load_dotenv()
 
 class MT5DataSource(DataSource):
+    def __init__(self):
+        Session = sessionmaker(bind=engine)
+        session = Session()
+        self._db_session = session
+        pass
+
     def connect(self):
         subprocess.run(["taskkill", "/IM", "terminal64.exe", "/F"])
+
+        account = os.getenv("MT5_ID")
+        password = os.getenv("MT5_PASSWORD")
+        server = os.getenv("MT5_SERVER")
 
         mt5.initialize()
         mt5.login(account, password, server)
@@ -42,51 +35,46 @@ class MT5DataSource(DataSource):
     def pull_data(self):
         # Fetch account information
         account_info = mt5.account_info()
-        print("....", account_info._asdict())
         account_info_dict = account_info._asdict()
+
+        print('.. ... account_info', account_info)
+        print('.. ... account_info_dict', account_info_dict)
+
+        history_orders_dict = []
+        history_deals_dict  = []
 
         from_date = datetime(2015, 1, 1)
         to_date = datetime.now() + timedelta(days=1)
-        # Fetch account history order
+        
         history_orders = mt5.history_orders_get(from_date, to_date)
-
         if history_orders:
-            orders_dict_list = [order._asdict() for order in history_orders]
-        else:
-            orders_dict_list = []
-
-        account_info_dict["history_orders"] = orders_dict_list
-        # Fetch account history deal
-
+            history_orders_dict = [order._asdict() for order in history_orders]
+            
         history_deals = mt5.history_deals_get(from_date, to_date)
-
         if history_deals:
-            deal_dict_list = [deal._asdict() for deal in history_deals]
-        else:
-            deal_dict_list = []
+            history_deals_dict = [deal._asdict() for deal in history_deals]
 
-        account_info_dict["history_deals"] = deal_dict_list
+        # Fetch open positions
+        positions = mt5.positions_get()
+        positions_list = []
+        if positions:
+            for pos in positions:
+                positions_list.append(pos._asdict())
 
-        # # Fetch open positions
-        # positions = mt5.positions_get()
-        # positions_list = []
-        # if positions:
-        #     for pos in positions:
-        #         positions_list.append(pos._asdict())
+        # Fetch pending orders
+        orders = mt5.orders_get()
+        orders_list = []
+        if orders:
+            for order in orders:
+                orders_list.append(order._asdict())
 
-        # # Fetch pending orders
-        # orders = mt5.orders_get()
-        # orders_list = []
-        # if orders:
-        #     for order in orders:
-        #         orders_list.append(order._asdict())
-
-        # account_info_dict["Positions"] = positions_list
-        # account_info_dict["PendingOrders"] = orders_list
-        # with open("output_raw.json", "w", encoding="utf-8") as json_file:
-        #     json.dump(account_info_dict, json_file, indent=4, ensure_ascii=False)
-        print("account_info_dict", account_info_dict)
-        return account_info_dict
+        return {
+            "account": account_info_dict,
+            "positions": positions_list,
+            "orders": orders_list,
+            "history_orders" : history_orders_dict,
+            "history_deals": history_deals_dict
+        }
 
     def clean_data(self, account_info_dict):
         print("Cleaning MT5 data...")
@@ -111,7 +99,7 @@ class MT5DataSource(DataSource):
                     "time_setup_msc",
                 ]:
                     if key in item and item[key]:
-                        item[key] = format_time(item[key])
+                        item[key] = self.format_time(item[key])
 
         orders = cleaned_data.get("history_orders", [])
         deals = cleaned_data.get("history_deals", [])
@@ -173,12 +161,12 @@ class MT5DataSource(DataSource):
             if key not in fields_to_exclude and value is not None
         }
 
-        with open("output.json", "w", encoding="utf-8") as json_file:
-            json.dump(cleaned_data, json_file, indent=4, ensure_ascii=False)
+        # with open("output.json", "w", encoding="utf-8") as json_file:
+        #     json.dump(cleaned_data, json_file, indent=4, ensure_ascii=False)
 
         print(cleaned_data)
 
-        return {"data": cleaned_data}
+        return {"data": json.dumps(cleaned_data)}
 
     def close_connection(self):
         mt5.shutdown()
@@ -189,3 +177,72 @@ class MT5DataSource(DataSource):
         raw_data = self.pull_data()
         cleaned_data = self.clean_data(raw_data)
         return cleaned_data
+    
+    def sync_raw_data_platform(self):
+
+        self.connect()
+        raw_data = self.pull_data()        
+        new_log = TrackingDaily(
+            account_logs = raw_data,  # Dữ liệu JSON
+            broker_name = raw_data['account']['company'],
+            platform_name = "MetaTrader5",
+            account_id = raw_data['account']['login']
+        )
+
+        self._db_session.add(new_log)
+        self._db_session.commit()
+
+        return {
+            "status": True,
+            "msg" : "Update Success"
+        }
+    
+    def fetch_data(self, where= {}):
+        if len(where) > 0:
+            where_condition = [getattr(TrackingDaily, key) == value for key, value in where.items()]
+            logs = self._db_session.query(TrackingDaily).filter_by(and_(*where_condition)).all()
+            return {
+                "status": True,
+                "data": logs,
+                "where": where
+            }
+        
+
+        logs = self._db_session.query(TrackingDaily).all()
+        logs_dict = [row.to_dict() for row in logs]
+
+        return {
+            "status": True,
+            "data": logs_dict,
+        }
+
+    def format_time(self, timestamp):
+        if timestamp and isinstance(timestamp, (int, float)):
+            if timestamp > 10000000000:
+                timestamp /= 1000
+            utc_time = datetime.utcfromtimestamp(timestamp)
+            utc_time = pytz.utc.localize(utc_time)
+            return utc_time.strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            return None
+        
+    def calculate_balance_at(self, start_time, end_time, initial_balance):
+        deals = mt5.history_deals_get(start_time, end_time)
+        if deals is None:
+            print(f"No deals found, error code: {mt5.last_error()}")
+            return initial_balance
+
+        
+        balance = initial_balance
+        for deal in deals:
+            if deal.type in [DEAL_TYPE_BUY, DEAL_TYPE_SELL]:
+                balance += deal.profit
+            elif deal.type == DEAL_TYPE_BALANCE:
+                balance += deal.profit
+
+        return balance
+        
+
+
+
+

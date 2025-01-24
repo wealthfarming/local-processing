@@ -10,7 +10,11 @@ def hello_world():
 
 @api_blueprint.route('/crawlers/mt5', methods=['GET'])
 def crawlers_mt5():
-    return jsonify(MT5DataSource().get_data())
+    return jsonify(MT5DataSource().sync_raw_data_platform())
+
+@api_blueprint.route('/crawlers/daily-logs', methods=['GET'])
+def crawlers_data():
+    return jsonify(MT5DataSource().fetch_data())
 
 @api_blueprint.route('/data', methods=['POST'])
 def receive_data():
