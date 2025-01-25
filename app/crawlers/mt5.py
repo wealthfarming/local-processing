@@ -2,16 +2,17 @@ from .base import DataSource
 import MetaTrader5 as mt5
 from MetaTrader5 import DEAL_TYPE_BUY, DEAL_TYPE_SELL, DEAL_TYPE_BALANCE
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import subprocess
 import os
 import json
 import pytz
-from database import TrackingDaily, engine
+from database import TrackingDaily, engine, HistoryDealsSeries
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import and_
 from dotenv import load_dotenv
-load_dotenv()
+from collections import defaultdict
+from decimal import Decimal, ROUND_HALF_UP
 
 class MT5DataSource(DataSource):
     def __init__(self):
@@ -21,16 +22,18 @@ class MT5DataSource(DataSource):
         pass
 
     def connect(self):
+        load_dotenv(override=True)
         subprocess.run(["taskkill", "/IM", "terminal64.exe", "/F"])
 
-        account = os.getenv("MT5_ID")
-        password = os.getenv("MT5_PASSWORD")
-        server = os.getenv("MT5_SERVER")
+        account = os.environ.get("MT5_EXNESS_ACCOUNT_ID")
+        password = os.environ.get("MT5_EXNESS_PASSWORD")
+        server = os.environ.get("MT5_EXNESS_SERVER")
+        terminal_path = os.environ.get("MT5_TERMINAL_EXNESS_PATH")
 
-        mt5.initialize()
-        mt5.login(account, password, server)
+        mt5.initialize(path=terminal_path)
+        result = mt5.login(account, password, server)
 
-        print("Connecting to MT5 server...")
+        print("Connecting to MT5 server...", result)
 
     def pull_data(self):
         # Fetch account information
@@ -178,7 +181,6 @@ class MT5DataSource(DataSource):
         cleaned_data = self.clean_data(raw_data)
         return cleaned_data
 
-    
     def sync_raw_data_platform(self):
 
         self.connect()
@@ -200,11 +202,12 @@ class MT5DataSource(DataSource):
     
     def fetch_data(self, where= {}):
         if len(where) > 0:
-            where_condition = [getattr(TrackingDaily, key) == value for key, value in where.items()]
-            logs = self._db_session.query(TrackingDaily).filter_by(and_(*where_condition)).all()
+
+            logs = self._db_session.query(TrackingDaily).filter_by(**where).all()
+            logs_dict = [row.to_dict() for row in logs]
             return {
                 "status": True,
-                "data": logs,
+                "data": logs_dict,
                 "where": where
             }
         
@@ -215,6 +218,22 @@ class MT5DataSource(DataSource):
         return {
             "status": True,
             "data": logs_dict,
+        }
+    
+    def find_first(self, where = {}):
+        if len(where) > 0:
+            item = self._db_session.query(TrackingDaily).filter_by(**where).first()
+            if(item):
+                item_dict = item.to_dict()
+                return {
+                    "status": True,
+                    "data": item_dict,
+                    "where": where
+                }
+
+        return {
+            "status": False,
+            "data": {},
         }
 
     def format_time(self, timestamp):
@@ -242,6 +261,70 @@ class MT5DataSource(DataSource):
                 balance += deal.profit
 
         return balance
+    
+    def sync_transform_time_series(self, mt5_login_id):
+        log = self.find_first({"account_id": mt5_login_id})
+        if log['status'] == False:
+            return {
+                "status": False
+            }
+
+        history_deals = log['data']['account_logs']['history_deals']
+        tracking_id = log['data']['id']
+        daily_profit = defaultdict(float)
+        count_by_date = defaultdict(int)  
+        for deal in history_deals:
+            deal_date = self.timestamp_to_date(deal["time"])
+            daily_profit[deal_date.isoformat()] += deal["profit"]
+            count_by_date[deal_date.isoformat()] += 1
+
+        current_balance = 0
+        balance_by_date = {}
+        for day, profit in sorted(daily_profit.items()):
+            current_balance += profit
+            number = Decimal(current_balance)
+            balance_by_date[day] = float(number.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+            
+            # insert to history series
+            new_time_series = HistoryDealsSeries(
+                time_iso = day,
+                balance_amount = balance_by_date[day],
+                tracking_daily_id = tracking_id,
+                tracking_account_id = mt5_login_id
+            )
+
+            self._db_session.add(new_time_series)
+            self._db_session.commit()
+
+        return {
+            "status": True,
+            'balance_by_date': balance_by_date,
+            'count_by_date': count_by_date,
+        }
+
+    def fetch_transform_time_series(self, where = {}):
+        if len(where) > 0:
+
+            logs = self._db_session.query(HistoryDealsSeries).filter_by(**where).all()
+            logs_dict = [row.to_dict() for row in logs]
+            return {
+                "status": True,
+                "data": logs_dict,
+                "where": where
+            }
+        
+
+        logs = self._db_session.query(HistoryDealsSeries).all()
+        logs_dict = [row.to_dict() for row in logs]
+
+        return {
+            "status": True,
+            "data": logs_dict,
+            "where": where
+        }
+
+    def timestamp_to_date(self, unix_time):
+        return datetime.fromtimestamp(unix_time, tz=timezone.utc).date()
         
 
 

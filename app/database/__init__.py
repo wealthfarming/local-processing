@@ -1,3 +1,3 @@
-from .db import TrackingDaily, engine
+from .db import TrackingDaily,HistoryDealsSeries, engine
 
-__all__ = ['TrackingDaily', 'engine']
+__all__ = ['TrackingDaily', 'HistoryDealsSeries', 'engine']
