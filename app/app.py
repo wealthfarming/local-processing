@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from utilities import get_exness_mt5_accounts, get_vantage_mt5_accounts, get_balance, get_equity
+from utilities import get_exness_mt5_accounts, get_vantage_mt5_accounts, get_current_equity, get_current_balance
 from crawlers import MT5DataSource
 import os
 
@@ -28,7 +28,7 @@ async def dapp_nav():
     return {
         "status": True,
         "data": {
-            "balance": get_balance(),
-            "equity": get_equity(),
+            "balance": get_current_balance(),
+            "equity": get_current_equity(),
         }
     }

@@ -1,3 +1,3 @@
-from .db import HistoryDeals, engine
+from .db import HistoryDeals, engine, BrokerAccounts
 
-__all__ = ['engine', 'HistoryDeals']
+__all__ = ['engine', 'HistoryDeals', 'BrokerAccounts']

@@ -1,16 +1,13 @@
 from .base import DataSource
 import MetaTrader5 as mt5
 from MetaTrader5 import DEAL_TYPE_BUY, DEAL_TYPE_SELL, DEAL_TYPE_BALANCE
-import pandas as pd
 from datetime import datetime, timedelta, timezone, time, date
 import subprocess
-import os
 import json
 import pytz
-from database import engine, HistoryDeals
+from database import engine, HistoryDeals, BrokerAccounts
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import and_, desc
-from dotenv import load_dotenv
 from collections import defaultdict
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -193,8 +190,6 @@ class MT5DataSource(DataSource):
         # with open("output.json", "w", encoding="utf-8") as json_file:
         #     json.dump(cleaned_data, json_file, indent=4, ensure_ascii=False)
 
-        print(cleaned_data)
-
         return {"data": json.dumps(cleaned_data)}
 
     def close_connection(self):
@@ -340,14 +335,44 @@ class MT5DataSource(DataSource):
             self._db_session.commit()
         pass
     
+    def sync_broker_accounts(self, accounts, terminal_path):
+        mt5.initialize(path=terminal_path)
+
+        arr_info = []
+
+        for acc in accounts:
+            check_account = (
+                self._db_session.query(BrokerAccounts)
+                .filter_by(account_id=str(acc["account_id"]))
+                .first()
+            )
+            
+            if check_account is None:
+                _result = mt5.login(
+                    int(acc["account_id"]), acc["password"], acc["server"]
+                )
+                if _result:
+                    arr_info.append(mt5.account_info())
+
+        for data in arr_info:
+            data_again = self.get_all_raw_data(data)
+            new_log = BrokerAccounts(
+                account_logs = data_again,  # Dữ liệu JSON
+                broker_name = data_again["account"]["company"],
+                platform_name = "MetaTrader5",
+                account_id = data_again["account"]["login"],
+            )
+            self._db_session.add(new_log)
+            self._db_session.commit()
+
+        return {"status": True, "msg": "Update Success"}
+    
     def has_yesterday_deal(self,account_id): # Boolean
         today = date.today().isoformat()
-        print("today", today)
         result = self._db_session.query(HistoryDeals).filter_by(**{
             "timestamp_iso": today,
             "account_id": str(account_id)
         }).order_by(desc(HistoryDeals.created_at)).first()
-        print("... result", result)
 
         if result == None:
             return False
