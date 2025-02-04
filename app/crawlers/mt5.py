@@ -2,14 +2,14 @@ from .base import DataSource
 import MetaTrader5 as mt5
 from MetaTrader5 import DEAL_TYPE_BUY, DEAL_TYPE_SELL, DEAL_TYPE_BALANCE
 import pandas as pd
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, time, date
 import subprocess
 import os
 import json
 import pytz
-from database import TrackingDaily, engine, HistoryDealsSeries
+from database import engine, HistoryDeals
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy import and_
+from sqlalchemy import and_, desc
 from dotenv import load_dotenv
 from collections import defaultdict
 from decimal import Decimal, ROUND_HALF_UP
@@ -21,32 +21,58 @@ class MT5DataSource(DataSource):
         self._db_session = session
         pass
 
-    def connect(self):
-        load_dotenv(override=True)
-        subprocess.run(["taskkill", "/IM", "terminal64.exe", "/F"])
-
-        account = os.environ.get("MT5_EXNESS_ACCOUNT_ID")
-        password = os.environ.get("MT5_EXNESS_PASSWORD")
-        server = os.environ.get("MT5_EXNESS_SERVER")
-        terminal_path = os.environ.get("MT5_TERMINAL_EXNESS_PATH")
-
-        mt5.initialize(path=terminal_path)
-        result = mt5.login(account, password, server)
-
-        print("Connecting to MT5 server...", result)
-
     def pull_data(self):
         # Fetch account information
         account_info = mt5.account_info()
         account_info_dict = account_info._asdict()
 
-        print('.. ... account_info', account_info)
-        print('.. ... account_info_dict', account_info_dict)
-
         history_orders_dict = []
         history_deals_dict  = []
 
         from_date = datetime(2015, 1, 1)
+        to_date = datetime.now() + timedelta(days=1)
+        
+        history_orders = mt5.history_orders_get(from_date, to_date)
+        if history_orders:
+            history_orders_dict = [order._asdict() for order in history_orders]
+            
+        history_deals = mt5.history_deals_get(from_date, to_date)
+        if history_deals:
+            history_deals_dict = [deal._asdict() for deal in history_deals]
+
+        # Fetch open positions
+        positions = mt5.positions_get()
+        positions_list = []
+        if positions:
+            for pos in positions:
+                positions_list.append(pos._asdict())
+
+        # Fetch pending orders
+        orders = mt5.orders_get()
+        orders_list = []
+        if orders:
+            for order in orders:
+                orders_list.append(order._asdict())
+
+        return {
+            "account": account_info_dict,
+            "positions": positions_list,
+            "orders": orders_list,
+            "history_orders" : history_orders_dict,
+            "history_deals": history_deals_dict
+        }
+    def connect(self):
+        return super().connect()
+    
+    def get_all_raw_data(self, data):
+         # Fetch account information
+        account_info = data
+        account_info_dict = account_info._asdict()
+
+        history_orders_dict = []
+        history_deals_dict  = []
+
+        from_date = datetime(2020, 1, 1)
         to_date = datetime.now() + timedelta(days=1)
         
         history_orders = mt5.history_orders_get(from_date, to_date)
@@ -175,25 +201,31 @@ class MT5DataSource(DataSource):
         mt5.shutdown()
         print("Closing connection to MT5 server.")
 
-    def get_data(self):
-        self.connect()
-        raw_data = self.pull_data()
-        cleaned_data = self.clean_data(raw_data)
-        return cleaned_data
+    def sync_raw_data_platform(self, accounts, terminal_path):
+        
+        subprocess.run(["taskkill", "/IM", "terminal64.exe", "/F"])
 
-    def sync_raw_data_platform(self):
-
-        self.connect()
-        raw_data = self.pull_data()        
-        new_log = TrackingDaily(
-            account_logs = raw_data,  # Dữ liệu JSON
-            broker_name = raw_data['account']['company'],
-            platform_name = "MetaTrader5",
-            account_id = raw_data['account']['login']
+        mt5.initialize(
+            path = terminal_path
         )
 
-        self._db_session.add(new_log)
-        self._db_session.commit()
+        arr_info = []
+
+        for acc in accounts: 
+            _result = mt5.login(int(acc['account_id']), acc['password'], acc['server'])
+            if(_result):
+                arr_info.append(mt5.account_info())
+
+        for data in arr_info:
+            data_again = self.get_all_raw_data(data)
+            new_log = TrackingDaily(
+                account_logs = data_again,  # Dữ liệu JSON
+                broker_name = data_again['account']['company'],
+                platform_name = "MetaTrader5",
+                account_id = data_again['account']['login']
+            )
+            self._db_session.add(new_log)
+            self._db_session.commit()
 
         return {
             "status": True,
@@ -222,7 +254,7 @@ class MT5DataSource(DataSource):
     
     def find_first(self, where = {}):
         if len(where) > 0:
-            item = self._db_session.query(TrackingDaily).filter_by(**where).first()
+            item = self._db_session.query(TrackingDaily).filter_by(**where).order_by(desc(TrackingDaily.created_at)).first()
             if(item):
                 item_dict = item.to_dict()
                 return {
@@ -246,61 +278,17 @@ class MT5DataSource(DataSource):
         else:
             return None
         
-    def calculate_balance_at(self, start_time, end_time, initial_balance):
-        deals = mt5.history_deals_get(start_time, end_time)
-        if deals is None:
-            print(f"No deals found, error code: {mt5.last_error()}")
-            return initial_balance
+    def calculate_balance_at(self, date_time, ):
+        time_from = datetime(2015, 1, 1)
+        time_from = datetime.combine(date_time, time(0, 0, 0)) 
+        time_to = datetime.combine(date_time, time(23, 59, 59))
 
-        
-        balance = initial_balance
-        for deal in deals:
-            if deal.type in [DEAL_TYPE_BUY, DEAL_TYPE_SELL]:
-                balance += deal.profit
-            elif deal.type == DEAL_TYPE_BALANCE:
-                balance += deal.profit
+        deals = mt5.history_deals_get(time_from, time_to)
+        balance = sum([deal.profit for deal in deals if deal.type in [DEAL_TYPE_BUY, DEAL_TYPE_SELL, DEAL_TYPE_BALANCE]])
+
 
         return balance
     
-    def sync_transform_time_series(self, mt5_login_id):
-        log = self.find_first({"account_id": mt5_login_id})
-        if log['status'] == False:
-            return {
-                "status": False
-            }
-
-        history_deals = log['data']['account_logs']['history_deals']
-        tracking_id = log['data']['id']
-        daily_profit = defaultdict(float)
-        count_by_date = defaultdict(int)  
-        for deal in history_deals:
-            deal_date = self.timestamp_to_date(deal["time"])
-            daily_profit[deal_date.isoformat()] += deal["profit"]
-            count_by_date[deal_date.isoformat()] += 1
-
-        current_balance = 0
-        balance_by_date = {}
-        for day, profit in sorted(daily_profit.items()):
-            current_balance += profit
-            number = Decimal(current_balance)
-            balance_by_date[day] = float(number.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
-            
-            # insert to history series
-            new_time_series = HistoryDealsSeries(
-                time_iso = day,
-                balance_amount = balance_by_date[day],
-                tracking_daily_id = tracking_id,
-                tracking_account_id = mt5_login_id
-            )
-
-            self._db_session.add(new_time_series)
-            self._db_session.commit()
-
-        return {
-            "status": True,
-            'balance_by_date': balance_by_date,
-            'count_by_date': count_by_date,
-        }
 
     def fetch_transform_time_series(self, where = {}):
         if len(where) > 0:
@@ -325,6 +313,91 @@ class MT5DataSource(DataSource):
 
     def timestamp_to_date(self, unix_time):
         return datetime.fromtimestamp(unix_time, tz=timezone.utc).date()
-        
+    
+    def sync_history_deals(self, mt5_data):
+        history_deals = mt5_data['history_deals']
+        daily_profit = defaultdict(float)
+        count_by_date = defaultdict(int)  
+        for deal in history_deals:
+            deal_date = self.timestamp_to_date(deal["time"])
+            daily_profit[deal_date.isoformat()] += deal["profit"]
+            count_by_date[deal_date.isoformat()] += 1
 
+        current_balance = 0
+        balance_by_date = {}
+        for day, profit in sorted(daily_profit.items()):
+            current_balance += profit
+            number = Decimal(current_balance)
+            balance_by_date[day] = float(number.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+            record = HistoryDeals(
+                timestamp = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp(),
+                timestamp_iso = day,
+                account_id = mt5_data['account']['login'],
+                account_balance = balance_by_date[day],
+                account_equity = balance_by_date[day],
+            )
+            self._db_session.merge(record)
+            self._db_session.commit()
+        pass
+    
+    def has_yesterday_deal(self,account_id): # Boolean
+        today = date.today().isoformat()
+        print("today", today)
+        result = self._db_session.query(HistoryDeals).filter_by(**{
+            "timestamp_iso": today,
+            "account_id": str(account_id)
+        }).order_by(desc(HistoryDeals.created_at)).first()
+        print("... result", result)
+
+        if result == None:
+            return False
+        return True
+
+    def sync_realtime_equity(self, accounts, terminal_path):
+        
+        # subprocess.run(["taskkill", "/IM", "terminal64.exe", "/F"])
+        today_timestamp = int(datetime.now().timestamp())
+        mt5.initialize(
+            path = terminal_path
+        )
+
+        arr_info = []
+
+        for acc in accounts: 
+            _result = mt5.login(int(acc['account_id']), acc['password'], acc['server'])
+            if(_result):
+                arr_info.append(mt5.account_info())
+
+        for data in arr_info:
+            data_again = self.get_all_raw_data(data)
+            
+            account_info = data_again['account']
+            # check is exist yesterday record in db
+            has_yesterday = self.has_yesterday_deal(account_info['login'])
+            if has_yesterday == False:
+                # sync_history_deals
+                self.sync_history_deals(data_again)
+                pass
+
+            today_record = self._db_session.query(HistoryDeals).filter_by(**{
+            "timestamp_iso": date.today().isoformat(),
+            "account_id": str(account_info['login'])
+            }).order_by(desc(HistoryDeals.created_at)).first()
+
+            if today_record == None:
+                # add record
+                record = HistoryDeals(
+                    timestamp = today_timestamp,
+                    timestamp_iso = self.timestamp_to_date(today_timestamp).isoformat(),
+                    account_id = str(account_info['login']),
+                    account_balance = account_info['balance'],
+                    account_equity = account_info['equity'],
+                )
+                self._db_session.add(record)
+            else:
+                # update record
+                today_record.account_balance = account_info['balance']
+                today_record.account_equity = account_info['equity']
+
+            self._db_session.commit()
 

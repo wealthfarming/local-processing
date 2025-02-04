@@ -9,9 +9,19 @@ load_dotenv()
 db_engine = os.getenv("DB_LOCAL_URL")
 engine = create_engine(db_engine)
 Base = declarative_base()
+class Brokers(Base):
+    __tablename__ = "brokers"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    broker_name = Column(Text, nullable=True)
+    created_at = Column(TIMESTAMP(timezone=False), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=False), server_default=func.now(), onupdate=func.now(), nullable=False)
+    platform_name = Column(Text, nullable=False)
 
-class TrackingDaily(Base):
-    __tablename__ = "tracking_daily"  # Tên bảng
+    def to_dict(self):
+        return {column.key: getattr(self, column.key) for column in class_mapper(self.__class__).columns}
+    
+class BrokerAccounts(Base):
+    __tablename__ = "broker_accounts"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     account_logs = Column(JSON, nullable=True)  # JSONB column
@@ -22,31 +32,21 @@ class TrackingDaily(Base):
     platform_name = Column(Text, nullable=False)
 
     def to_dict(self):
-        """
-        Convert the SQLAlchemy object to a dictionary.
-        """
         return {column.key: getattr(self, column.key) for column in class_mapper(self.__class__).columns}
-
-    def __repr__(self):
-        return f"<TrackingDailyAccount(id={self.id}, broker_name={self.broker_name}, platform_name={self.platform_name})>"
     
-class HistoryDealsSeries(Base):
-    __tablename__ = "history_deals_series"  # Tên bảng
+class HistoryDeals(Base):
+    __tablename__ = "history_deals"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    time_iso = Column(Text, nullable=True) 
-    tracking_account_id = Column(Text, nullable=True) #
-    balance_amount = Column(Numeric(precision=18, scale=2), nullable=True, default=0)
+    timestamp = Column(Numeric(precision=20), nullable=True) 
+    timestamp_iso = Column(Text, nullable=True)
+    account_id = Column(Text, nullable=True)
+    account_balance = Column(Numeric(precision=18, scale=2), nullable=True, default=0)
+    account_equity = Column(Numeric(precision=18, scale=2), nullable=True, default=0)
     created_at = Column(TIMESTAMP(timezone=False), server_default=func.now(), nullable=False)
     updated_at = Column(TIMESTAMP(timezone=False), server_default=func.now(), onupdate=func.now(), nullable=False)
-    tracking_daily_id = Column(Integer, nullable=False) # ref ID to TrackingDaily
     
-
     def to_dict(self):
-        """
-        Convert the SQLAlchemy object to a dictionary.
-        """
         return {column.key: getattr(self, column.key) for column in class_mapper(self.__class__).columns}
-
 # db_engine = "<dialect>+<driver>://<username>:<password>@<host>:<port>/<db_name>"
 Base.metadata.create_all(engine)
