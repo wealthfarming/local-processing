@@ -1,10 +1,34 @@
-from flask import Flask
-from api.routes import api_blueprint
+from fastapi import FastAPI
+from utilities import get_exness_mt5_accounts, get_vantage_mt5_accounts, get_balance, get_equity
+from crawlers import MT5DataSource
+import os
 
-app = Flask(__name__)
+app = FastAPI()
+@app.get("/")
+async def root():
+    return {"message": "Hello World"}
 
-# Đăng ký Blueprint
-app.register_blueprint(api_blueprint, url_prefix='/api')
+@app.get("/cron/sync-realtime-equity")
+async def sync_realtime_equity():
+    exness_accounts = get_exness_mt5_accounts()
+    vantage_accounts = get_vantage_mt5_accounts()
+    
+    exness_terminal_path = os.environ.get("MT5_TERMINAL_EXNESS_PATH")
+    vantage_terminal_path = os.environ.get("MT5_TERMINAL_VANTAGE_PATH")    
 
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    MT5DataSource().sync_realtime_equity(exness_accounts, exness_terminal_path)
+    MT5DataSource().sync_realtime_equity(vantage_accounts, vantage_terminal_path)
+    return {
+        "status": True,
+        "msg": "Success"
+    }
+
+@app.get("/dapp/nav")
+async def dapp_nav():
+    return {
+        "status": True,
+        "data": {
+            "balance": get_balance(),
+            "equity": get_equity(),
+        }
+    }
